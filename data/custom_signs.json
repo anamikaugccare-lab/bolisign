@@ -1,0 +1,84 @@
+[
+  {
+    "id": "sign-namaste",
+    "nameHindi": "नमस्ते",
+    "nameEnglish": "Namaste / Hello",
+    "category": "daily",
+    "landmarksSample": [],
+    "createdAt": "2026-09-27T16:55:08.229Z"
+  },
+  {
+    "id": "sign-paani",
+    "nameHindi": "पानी",
+    "nameEnglish": "Water",
+    "category": "daily",
+    "landmarksSample": [],
+    "createdAt": "2026-09-27T16:55:08.231Z"
+  },
+  {
+    "id": "sign-madad",
+    "nameHindi": "मदद चाहिए (SOS)",
+    "nameEnglish": "Help / Emergency",
+    "category": "emergency",
+    "landmarksSample": [],
+    "createdAt": "2026-09-27T16:55:08.231Z"
+  },
+  {
+    "id": "sign-haan",
+    "nameHindi": "हाँ",
+    "nameEnglish": "Yes",
+    "category": "daily",
+    "landmarksSample": [],
+    "createdAt": "2026-09-27T16:55:08.231Z"
+  },
+  {
+    "id": "sign-nahi",
+    "nameHindi": "नहीं",
+    "nameEnglish": "No",
+    "category": "daily",
+    "landmarksSample": [],
+    "createdAt": "2026-09-27T16:55:08.231Z"
+  },
+  {
+    "id": "sign-dhanyavaad",
+    "nameHindi": "धन्यवाद",
+    "nameEnglish": "Thank You",
+    "category": "daily",
+    "landmarksSample": [],
+    "createdAt": "2026-09-27T16:55:08.231Z"
+  },
+  {
+    "id": "sign-doctor",
+    "nameHindi": "डॉक्टर",
+    "nameEnglish": "Doctor / Medical",
+    "category": "emergency",
+    "landmarksSample": [],
+    "createdAt": "2026-09-27T16:55:08.231Z"
+  },
+  {
+    "id": "sign-khana",
+    "nameHindi": "खाना",
+    "nameEnglish": "Food / Hunger",
+    "category": "daily",
+    "landmarksSample": [],
+    "createdAt": "2026-09-27T16:55:08.231Z"
+  },
+  {
+    "id": "sign-library",
+    "nameHindi": "लाइब्रेरी (कॉलेज)",
+    "nameEnglish": "College Library",
+    "category": "college",
+    "landmarksSample": [],
+    "createdAt": "2026-09-27T16:55:08.231Z",
+    "recordedBy": "College Employee"
+  },
+  {
+    "id": "sign-attendance",
+    "nameHindi": "अटेंडेंस",
+    "nameEnglish": "Attendance",
+    "category": "college",
+    "landmarksSample": [],
+    "createdAt": "2026-09-27T16:55:08.231Z",
+    "recordedBy": "College Employee"
+  }
+]
