@@ -90,61 +90,107 @@ export const DEFAULT_SIGNS: CustomSign[] = [
   }
 ];
 
-function ensureDataDirectory() {
-  const dir = path.dirname(DATA_FILE);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+// Memory cache for serverless environments (Vercel)
+let memoryCache: CustomSign[] | null = null;
+
+function getDataFilePath(): string {
+  // On Vercel, the app root is read-only, but /tmp is writable
+  if (process.env.VERCEL || process.platform === 'linux') {
+    const tmpFile = path.join('/tmp', 'custom_signs.json');
+    if (!fs.existsSync(tmpFile)) {
+      try {
+        const sourceData = fs.existsSync(DATA_FILE) ? fs.readFileSync(DATA_FILE, 'utf8') : JSON.stringify(DEFAULT_SIGNS, null, 2);
+        fs.writeFileSync(tmpFile, sourceData, 'utf8');
+      } catch (e) {
+        // Fallback to in-memory
+      }
+    }
+    return tmpFile;
+  }
+  return DATA_FILE;
+}
+
+function ensureDataDirectory(filePath: string) {
+  try {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  } catch (e) {
+    // Ignore in read-only environment
   }
 }
 
 export function getAllSigns(): CustomSign[] {
-  ensureDataDirectory();
+  if (memoryCache && memoryCache.length > 0) {
+    return memoryCache;
+  }
+
+  const targetFile = getDataFilePath();
+  ensureDataDirectory(targetFile);
+
   try {
-    if (!fs.existsSync(DATA_FILE)) {
-      fs.writeFileSync(DATA_FILE, JSON.stringify(DEFAULT_SIGNS, null, 2), 'utf8');
-      return DEFAULT_SIGNS;
+    if (fs.existsSync(targetFile)) {
+      const raw = fs.readFileSync(targetFile, 'utf8');
+      const signs = JSON.parse(raw) as CustomSign[];
+      memoryCache = signs;
+      return signs;
     }
-    const raw = fs.readFileSync(DATA_FILE, 'utf8');
-    const signs = JSON.parse(raw) as CustomSign[];
-    return signs;
+    if (fs.existsSync(DATA_FILE)) {
+      const raw = fs.readFileSync(DATA_FILE, 'utf8');
+      const signs = JSON.parse(raw) as CustomSign[];
+      memoryCache = signs;
+      return signs;
+    }
+    memoryCache = [...DEFAULT_SIGNS];
+    return memoryCache;
   } catch (err) {
     console.error('Error reading signs data file:', err);
-    return DEFAULT_SIGNS;
+    memoryCache = [...DEFAULT_SIGNS];
+    return memoryCache;
+  }
+}
+
+function persistSigns(signs: CustomSign[]) {
+  memoryCache = signs;
+  const targetFile = getDataFilePath();
+  try {
+    ensureDataDirectory(targetFile);
+    fs.writeFileSync(targetFile, JSON.stringify(signs, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('Persist to disk failed, maintained in memory:', err);
   }
 }
 
 export function saveNewSign(sign: Omit<CustomSign, 'id' | 'createdAt'>): CustomSign {
-  ensureDataDirectory();
-  const signs = getAllSigns();
+  const signs = [...getAllSigns()];
   const newSign: CustomSign = {
     ...sign,
     id: 'sign-custom-' + Date.now(),
     createdAt: new Date().toISOString()
   };
   signs.push(newSign);
-  fs.writeFileSync(DATA_FILE, JSON.stringify(signs, null, 2), 'utf8');
+  persistSigns(signs);
   return newSign;
 }
 
 export function deleteSign(id: string): boolean {
-  ensureDataDirectory();
-  let signs = getAllSigns();
+  let signs = [...getAllSigns()];
   const initialLen = signs.length;
   signs = signs.filter(s => s.id !== id);
   if (signs.length !== initialLen) {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(signs, null, 2), 'utf8');
+    persistSigns(signs);
     return true;
   }
   return false;
 }
 
 export function updateSign(id: string, updates: Partial<CustomSign>): CustomSign | null {
-  ensureDataDirectory();
-  const signs = getAllSigns();
+  const signs = [...getAllSigns()];
   const index = signs.findIndex(s => s.id === id);
   if (index === -1) return null;
   signs[index] = { ...signs[index], ...updates };
-  fs.writeFileSync(DATA_FILE, JSON.stringify(signs, null, 2), 'utf8');
+  persistSigns(signs);
   return signs[index];
 }
 
