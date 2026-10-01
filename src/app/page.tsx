@@ -2,8 +2,9 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Camera, Volume2, VolumeX, Sparkles, Mic, PlusCircle, 
-  BookOpen, UserCheck, Smartphone, CheckCircle, RefreshCw, AlertCircle
+  Camera, Volume2, VolumeX, Sparkles, Mic, MicOff, PlusCircle, 
+  BookOpen, UserCheck, Smartphone, CheckCircle, RefreshCw, AlertCircle,
+  Copy, Trash2, RotateCcw, Check
 } from 'lucide-react';
 import { CustomSign } from '@/lib/types';
 
@@ -47,9 +48,13 @@ export default function BoliSignPage() {
   const [saveStatus, setSaveStatus] = useState<string>('');
   const [quickSignName, setQuickSignName] = useState<string>('');
 
-  // Reverse Mode
+  // Reverse Mode & Voice-to-Text Speech Recognition
   const [spokenHindiText, setSpokenHindiText] = useState<string>('हाँ, लाइब्रेरी दूसरे माले पर खुली है।');
   const [manualHindiInput, setManualHindiInput] = useState<string>('');
+  const [isListening, setIsListening] = useState<boolean>(false);
+  const [speechNotice, setSpeechNotice] = useState<string>('');
+  const [copiedNotice, setCopiedNotice] = useState<boolean>(false);
+  const recognitionRef = useRef<any>(null);
 
   // Video file test mode
   const [isVideoFileMode, setIsVideoFileMode] = useState<boolean>(false);
@@ -66,18 +71,39 @@ export default function BoliSignPage() {
   const recentDetectionsRef = useRef<string[]>([]);
   const latestRawLandmarksRef = useRef<any[] | null>(null);
   const latestFingerSignatureRef = useRef<any>(null);
+  const lastStableLandmarksRef = useRef<any[] | null>(null);
+  const lastStableSignatureRef = useRef<any>(null);
+  const lastStableTimeRef = useRef<number>(0);
+  const lockedPoseRef = useRef<{ landmarks: any[]; signature: any; name: string; label?: string } | null>(null);
+  const [lockedPoseStatus, setLockedPoseStatus] = useState<string>('');
+  const [lockedPoseInfo, setLockedPoseInfo] = useState<{ label: string; signature: any } | null>(null);
+  const [liveGestureName, setLiveGestureName] = useState<string>('');
+  const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [poseCaptureNotice, setPoseCaptureNotice] = useState<string>('');
 
   const BASE_SIGN_IDS = ['sign-namaste', 'sign-paani', 'sign-madad', 'sign-haan', 'sign-nahi', 'sign-dhanyavaad', 'sign-doctor', 'sign-khana', 'sign-library', 'sign-attendance'];
   const customSigns = allSigns.filter(s => !BASE_SIGN_IDS.includes(s.id));
+  const activeTabRef = useRef<'interpret' | 'train' | 'reverse'>('interpret');
+  const customSignsRef = useRef<CustomSign[]>([]);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  useEffect(() => {
+    customSignsRef.current = allSigns.filter(s => !BASE_SIGN_IDS.includes(s.id));
+  }, [allSigns]);
 
   // 1. Load signs from database
   const loadSigns = async () => {
     try {
       const res = await fetch('/api/signs');
       const data = await res.json();
-      if (data.signs) setAllSigns(data.signs);
+      if (data.signs) {
+        setAllSigns(data.signs);
+        customSignsRef.current = data.signs.filter((s: any) => !BASE_SIGN_IDS.includes(s.id));
+      }
     } catch (err) {
       console.error('Error loading signs:', err);
     }
@@ -120,6 +146,114 @@ export default function BoliSignPage() {
       window.speechSynthesis.speak(utterance);
     }
   };
+
+  // 2b. Hindi Speech Recognition (Voice-to-Text for Reverse Mode)
+  const startListening = () => {
+    if (typeof window === 'undefined') return;
+
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRec) {
+      setSpeechNotice('⚠️ आपके ब्राउज़र में आवाज़ पहचान (Speech Recognition) उपलब्ध नहीं है। कृपया Google Chrome या Microsoft Edge का उपयोग करें।');
+      return;
+    }
+
+    try {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.abort(); } catch (e) {}
+      }
+
+      const rec = new SpeechRec();
+      rec.lang = 'hi-IN'; // Indian Hindi
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.maxAlternatives = 1;
+
+      rec.onstart = () => {
+        setIsListening(true);
+        setSpeechNotice('🔴 माइक चालू है... कृपया हिंदी में बोलें');
+      };
+
+      rec.onresult = (event: any) => {
+        let interim = '';
+        let final = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            final += event.results[i][0].transcript;
+          } else {
+            interim += event.results[i][0].transcript;
+          }
+        }
+        const text = final || interim;
+        if (text && text.trim()) {
+          setSpokenHindiText(text);
+          setSpeechNotice(`✓ पहचाना गया: "${text}"`);
+        }
+      };
+
+      rec.onerror = (event: any) => {
+        console.warn('Speech recognition error:', event.error);
+        if (event.error === 'not-allowed') {
+          setSpeechNotice('⚠️ माइक्रोफ़ोन अनुमति ब्लॉक है! कृपया ब्राउज़र एड्रेस बार में 🔒 या माइक आइकन पर क्लिक करके Microphone "Allow" करें।');
+        } else if (event.error === 'no-speech') {
+          setSpeechNotice('⚠️ आवाज़ सुनाई नहीं दी। दोबारा माइक दबाकर बोलें।');
+        } else if (event.error === 'network') {
+          setSpeechNotice('⚠️ नेटवर्क एरर: आवाज़ पहचान के लिए इंटरनेट आवश्यक है।');
+        } else {
+          setSpeechNotice(`माइक स्थिति: ${event.error}`);
+        }
+        setIsListening(false);
+      };
+
+      rec.onend = () => {
+        setIsListening(false);
+      };
+
+      rec.start();
+      recognitionRef.current = rec;
+      unlockAudio();
+    } catch (err: any) {
+      console.error('Speech recognition start error:', err);
+      setSpeechNotice('माइक शुरू करने में समस्या: ' + err.message);
+      setIsListening(false);
+    }
+  };
+
+  const stopListening = () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {}
+      recognitionRef.current = null;
+    }
+    setIsListening(false);
+    setSpeechNotice('माइक बंद किया गया');
+    setTimeout(() => setSpeechNotice(''), 3000);
+  };
+
+  const toggleListening = () => {
+    if (isListening) {
+      stopListening();
+    } else {
+      startListening();
+    }
+  };
+
+  const copyToClipboard = () => {
+    if (!spokenHindiText) return;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(spokenHindiText);
+      setCopiedNotice(true);
+      setTimeout(() => setCopiedNotice(false), 2000);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.abort(); } catch (e) {}
+      }
+    };
+  }, []);
 
   // 3. Initialize MediaPipe Hands
   useEffect(() => {
@@ -356,6 +490,8 @@ export default function BoliSignPage() {
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
       setHandsDetectedCount(results.multiHandLandmarks.length);
       latestRawLandmarksRef.current = results.multiHandLandmarks[0];
+      lastStableLandmarksRef.current = results.multiHandLandmarks[0];
+      lastStableTimeRef.current = Date.now();
 
       for (const landmarks of results.multiHandLandmarks) {
         // Draw Skeleton Connections
@@ -418,12 +554,12 @@ export default function BoliSignPage() {
     // Reference Palm Scale (wrist to middle MCP) to make checks distance-invariant
     const palmSize = Math.max(dist(wrist, middleMcp), 0.05);
 
-    // Rotation and distance-invariant finger extension:
-    // A finger is OPEN if its tip is significantly farther from wrist and MCP than PIP
-    const isIndexOpen = (dist(indexTip, wrist) > dist(indexPip, wrist) * 1.12 || indexTip.y < indexPip.y) && dist(indexTip, indexMcp) > palmSize * 0.58;
-    const isMiddleOpen = (dist(middleTip, wrist) > dist(middlePip, wrist) * 1.12 || middleTip.y < middlePip.y) && dist(middleTip, middleMcp) > palmSize * 0.58;
-    const isRingOpen = (dist(ringTip, wrist) > dist(ringPip, wrist) * 1.12 || ringTip.y < ringPip.y) && dist(ringTip, ringMcp) > palmSize * 0.58;
-    const isPinkyOpen = (dist(pinkyTip, wrist) > dist(pinkyPip, wrist) * 1.12 || pinkyTip.y < pinkyPip.y) && dist(pinkyTip, pinkyMcp) > palmSize * 0.58;
+    // True Euclidean Joint Angle & Distance Invariant Finger Extension (No screen-Y dependencies!)
+    // When a finger is curled into the palm, its tip is closer to the wrist/MCP than its PIP joint:
+    const isIndexOpen = dist(indexTip, wrist) > dist(indexPip, wrist) * 1.10 && dist(indexTip, indexMcp) > dist(indexPip, indexMcp) * 1.05;
+    const isMiddleOpen = dist(middleTip, wrist) > dist(middlePip, wrist) * 1.10 && dist(middleTip, middleMcp) > dist(middlePip, middleMcp) * 1.05;
+    const isRingOpen = dist(ringTip, wrist) > dist(ringPip, wrist) * 1.10 && dist(ringTip, ringMcp) > dist(ringPip, ringMcp) * 1.05;
+    const isPinkyOpen = dist(pinkyTip, wrist) > dist(pinkyPip, wrist) * 1.10 && dist(pinkyTip, pinkyMcp) > dist(pinkyPip, pinkyMcp) * 1.05;
 
     // Thumb extension & orientation
     const isThumbOpen = dist(thumbTip, wrist) > dist(thumbMcp, wrist) * 1.18 && dist(thumbTip, indexMcp) > palmSize * 0.38;
@@ -443,11 +579,29 @@ export default function BoliSignPage() {
     const allFourClosed = !isIndexOpen && !isMiddleOpen && !isRingOpen && !isPinkyOpen;
     const openCount = (isIndexOpen ? 1 : 0) + (isMiddleOpen ? 1 : 0) + (isRingOpen ? 1 : 0) + (isPinkyOpen ? 1 : 0);
 
-    const stateDesc = `तर्जनी: ${isIndexOpen ? 'खुली' : 'मुड़ी'} | मध्यमा: ${isMiddleOpen ? 'खुली' : 'मुड़ी'} | अंगूठा: ${thumbPointsUp ? 'ऊपर' : thumbPointsDown ? 'नीचे' : isThumbOpen ? 'फैला' : 'बंद'}`;
+    const stateDesc = `तर्जनी: ${isIndexOpen ? 'खुली' : 'मुड़ी'} | मध्यमा: ${isMiddleOpen ? 'खुली' : 'मुड़ी'} | अनामिका: ${isRingOpen ? 'खुली' : 'मुड़ी'} | कनिष्ठिका: ${isPinkyOpen ? 'खुली' : 'मुड़ी'}`;
     setFingerStates(stateDesc);
 
+    let gestureSummary = '';
+    if (isIndexOpen && isMiddleOpen && !isRingOpen && !isPinkyOpen) {
+      gestureSummary = '✌️ २ उंगलियां (तर्जनी + मध्यमा)';
+    } else if (isIndexOpen && isMiddleOpen && isRingOpen && !isPinkyOpen) {
+      gestureSummary = '३ उंगलियां (W आकार)';
+    } else if (isIndexOpen && !isMiddleOpen && !isRingOpen && !isPinkyOpen) {
+      gestureSummary = '☝️ १ उंगली (तर्जनी)';
+    } else if (allFourOpen) {
+      gestureSummary = '✋ खुला हाथ (नमस्ते)';
+    } else if (allFourClosed && (isThumbOpen || thumbPointsUp)) {
+      gestureSummary = '👍 अंगूठा ऊपर (हाँ)';
+    } else if (allFourClosed) {
+      gestureSummary = '✊ मुट्ठी';
+    } else {
+      gestureSummary = `${openCount} उंगलियां खुली`;
+    }
+    setLiveGestureName(gestureSummary);
+
     // Save live finger signature snapshot for custom sign training
-    latestFingerSignatureRef.current = {
+    const currentSig = {
       thumb: isThumbOpen,
       index: isIndexOpen,
       middle: isMiddleOpen,
@@ -456,30 +610,41 @@ export default function BoliSignPage() {
       thumbPointsUp,
       isPinch: isIndexThumbPinch
     };
+    latestFingerSignatureRef.current = currentSig;
+    lastStableSignatureRef.current = currentSig;
 
     let detected = '';
     let conf = 0.95;
 
-    // 0. Custom Hackathon / Employee Trained Signs (Checked FIRST for instant response)
-    if (customSigns.length > 0) {
-      for (const sign of customSigns) {
+    // 0. Custom Hackathon / Employee Trained Signs (Checked FIRST for instant response using live Ref)
+    const currentCustomSigns = customSignsRef.current.length > 0 ? customSignsRef.current : customSigns;
+    if (currentCustomSigns.length > 0) {
+      for (const sign of currentCustomSigns) {
+        let isMatch = false;
+
         // Method A: Deterministic Finger Topology Signature (100% invariant to scale and rotation)
         if (sign.fingerSignature) {
           const sig = sign.fingerSignature;
-          const matchFingers = 
-            sig.index === isIndexOpen &&
-            sig.middle === isMiddleOpen &&
-            sig.ring === isRingOpen &&
-            sig.pinky === isPinkyOpen &&
-            (sig.thumb === undefined || sig.thumb === isThumbOpen);
 
-          if (matchFingers) {
-            detected = sign.nameHindi;
-            break;
+          // Check if 4 main fingers match exactly:
+          const fourFingersMatch = 
+            Boolean(sig.index) === isIndexOpen &&
+            Boolean(sig.middle) === isMiddleOpen &&
+            Boolean(sig.ring) === isRingOpen &&
+            Boolean(sig.pinky) === isPinkyOpen;
+
+          if (fourFingersMatch) {
+            // If sign is pinch-specific, verify pinch
+            if (sig.isPinch && !isIndexThumbPinch) {
+              isMatch = false;
+            } else {
+              isMatch = true;
+            }
           }
         }
-        // Method B: Normalized 21-Landmark Distance Fallback
-        else if (sign.landmarksSample && sign.landmarksSample.length === 21) {
+
+        // Method B: Normalized 21-Landmark Distance Check
+        if (!isMatch && sign.landmarksSample && sign.landmarksSample.length === 21) {
           let diffSum = 0;
           for (let i = 0; i < 21; i++) {
             const currDx = (lm[i].x - wrist.x) / palmSize;
@@ -493,10 +658,14 @@ export default function BoliSignPage() {
             diffSum += Math.hypot(currDx - sampleDx, currDy - sampleDy, currDz - sampleDz);
           }
           const avgDiff = diffSum / 21;
-          if (avgDiff < 0.38) {
-            detected = sign.nameHindi;
-            break;
+          if (avgDiff < 0.60) {
+            isMatch = true;
           }
+        }
+
+        if (isMatch) {
+          detected = sign.nameHindi;
+          break;
         }
       }
     }
@@ -594,12 +763,14 @@ export default function BoliSignPage() {
             setSentenceTokens(prev => prev.filter(token => token !== 'हाँ'));
           }
 
-          speakHindi(detected);
-
-          setSentenceTokens(prev => {
-            if (!prev.includes(detected)) return [...prev, detected];
-            return prev;
-          });
+          // Only announce detected signs via TTS in Interpret tab so Tab 2 training is quiet & peaceful
+          if (activeTabRef.current === 'interpret') {
+            speakHindi(detected);
+            setSentenceTokens(prev => {
+              if (!prev.includes(detected)) return [...prev, detected];
+              return prev;
+            });
+          }
         }
       }
     }
@@ -634,52 +805,190 @@ export default function BoliSignPage() {
     }
   };
 
-  // 9. Save Custom Sign (with Live Camera Pose capture)
-  const handleSaveSign = async () => {
-    if (!newSignHindi.trim()) {
-      alert('कृपया साइन का नाम लिखें!');
+  // Instant 1-Click Pose Lock from Live Camera Feed
+  const handleLockCurrentPose = () => {
+    if (!cameraActive) {
+      setPoseCaptureNotice('⚠️ कृपया पहले ऊपर "कैमरा ऑन करें" ताकि आपका हाथ दिख सके!');
       return;
     }
+    const rawLm = latestRawLandmarksRef.current || lastStableLandmarksRef.current;
+    const sig = latestFingerSignatureRef.current || lastStableSignatureRef.current;
+
+    if (!rawLm || rawLm.length < 21 || !sig) {
+      setPoseCaptureNotice('⚠️ कैमरे के सामने अपना हाथ लाएं और स्थिर रखें, फिर लॉक बटन दबाएं!');
+      return;
+    }
+
+    let summary = '';
+    if (sig.index && sig.middle && !sig.ring && !sig.pinky) summary = '✌️ २ उंगलियां (तर्जनी + मध्यमा)';
+    else if (sig.index && sig.middle && sig.ring && !sig.pinky) summary = '३ उंगलियां (W आकार)';
+    else if (sig.index && !sig.middle && !sig.ring && !sig.pinky) summary = '☝️ १ उंगली';
+    else if (sig.index && sig.middle && sig.ring && sig.pinky) summary = '✋ खुला हाथ (सभी उंगलियां)';
+    else if (!sig.index && !sig.middle && !sig.ring && !sig.pinky && (sig.thumb || sig.thumbPointsUp)) summary = '👍 अंगूठा';
+    else if (!sig.index && !sig.middle && !sig.ring && !sig.pinky) summary = '✊ मुट्ठी';
+    else {
+      const openFingers = [];
+      if (sig.index) openFingers.push('तर्जनी');
+      if (sig.middle) openFingers.push('मध्यमा');
+      if (sig.ring) openFingers.push('अनामिका');
+      if (sig.pinky) openFingers.push('कनिष्ठिका');
+      if (sig.thumb) openFingers.push('अंगूठा');
+      summary = openFingers.length > 0 ? `${openFingers.join(' + ')} खुली` : 'हाथ पोज़';
+    }
+
+    lockedPoseRef.current = {
+      landmarks: rawLm,
+      signature: sig,
+      name: newSignHindi.trim() || 'Custom Sign',
+      label: summary
+    };
+    setLockedPoseStatus(`✅ पोज़ लॉक हो गया: ${summary}`);
+    setLockedPoseInfo({ label: summary, signature: sig });
+    setPoseCaptureNotice(`🔒 "${summary}" का पोज़ लॉक हो गया! अब आप आराम से नाम लिखकर नीचे 'सेव' दबाएं।`);
+    speakHindi(`${summary} पोज़ लॉक हो गया!`);
+  };
+
+  const handleUnlockPose = () => {
+    lockedPoseRef.current = null;
+    setLockedPoseStatus('');
+    setLockedPoseInfo(null);
+    setPoseCaptureNotice('🔓 पोज़ अनलॉक हो गया। अब आप लाइव कैमरा या नया पोज़ ले सकते हैं।');
+  };
+
+  // 3-Second Pose Snapshot Countdown (Freeze / Lock Pose before typing)
+  const handleCapturePoseCountdown = () => {
+    if (!cameraActive) {
+      setPoseCaptureNotice('⚠️ कृपया पहले "कैमरा ऑन करें" ताकि हाथ दिख सके!');
+      setTimeout(() => setPoseCaptureNotice(''), 4000);
+      return;
+    }
+    setCountdownSeconds(3);
+    setPoseCaptureNotice('⏱️ हाथ का इशारा कैमरे के सामने रखें: ३...');
+
+    setTimeout(() => {
+      setCountdownSeconds(2);
+      setPoseCaptureNotice('⏱️ हाथ का इशारा कैमरे के सामने रखें: २...');
+    }, 1000);
+
+    setTimeout(() => {
+      setCountdownSeconds(1);
+      setPoseCaptureNotice('⏱️ हाथ का इशारा कैमरे के सामने रखें: १...');
+    }, 2000);
+
+    setTimeout(() => {
+      setCountdownSeconds(null);
+      let lm = latestRawLandmarksRef.current;
+      let sig = latestFingerSignatureRef.current;
+      if (!lm || lm.length < 21) {
+        lm = lastStableLandmarksRef.current;
+        sig = lastStableSignatureRef.current;
+      }
+
+      if (lm && lm.length === 21) {
+        let summary = '';
+        if (sig.index && sig.middle && !sig.ring && !sig.pinky) summary = '✌️ २ उंगलियां (तर्जनी + मध्यमा)';
+        else if (sig.index && sig.middle && sig.ring && !sig.pinky) summary = '३ उंगलियां (W आकार)';
+        else if (sig.index && !sig.middle && !sig.ring && !sig.pinky) summary = '☝️ १ उंगली';
+        else if (sig.index && sig.middle && sig.ring && sig.pinky) summary = '✋ खुला हाथ (सभी उंगलियां)';
+        else summary = 'हाथ पोज़';
+
+        lockedPoseRef.current = {
+          landmarks: lm,
+          signature: sig,
+          name: newSignHindi.trim() || 'Custom Sign',
+          label: summary
+        };
+        setLockedPoseStatus(`✅ पोज़ लॉक हो गया: ${summary}`);
+        setLockedPoseInfo({ label: summary, signature: sig });
+        setPoseCaptureNotice(`📸 "${summary}" पोज़ लॉक हो गया! अब आप आराम से नाम लिखकर "सेव" बटन दबा सकते हैं।`);
+        speakHindi(`${summary} पोज़ लॉक हो गया!`);
+      } else {
+        setPoseCaptureNotice('⚠️ हाथ नहीं दिखा! कृपया कैमरे के सामने हाथ लाएं और दोबारा कोशिश करें।');
+      }
+    }, 3000);
+  };
+
+  // 9. Save Custom Sign (with Live Camera Pose or Locked Pose capture)
+  const handleSaveSign = async () => {
+    const nameH = newSignHindi.trim();
+    if (!nameH) {
+      setSaveStatus('⚠️ कृपया नए साइन का नाम लिखें (जैसे: फीस काउंटर, कैरम, कैंटीन)!');
+      return;
+    }
+
+    if (!cameraActive) {
+      setSaveStatus('⚠️ कैमरा अभी बंद है! कृपया ऊपर "कैमरा ऑन करें" ताकि AI आपके हाथ का पोज़ देख सके।');
+      return;
+    }
+
+    // Determine landmarks and signature:
+    // 1: Locked pose from 3s countdown snapshot
+    // 2: Live detected landmarks right now
+    // 3: Stable landmarks from last 8 seconds (e.g. while user typed on keyboard)
+    let rawLm: any[] | null = null;
+    let fingerSig: any = null;
+
+    if (lockedPoseRef.current && lockedPoseRef.current.landmarks.length === 21) {
+      rawLm = lockedPoseRef.current.landmarks;
+      fingerSig = lockedPoseRef.current.signature;
+    } else if (latestRawLandmarksRef.current && latestRawLandmarksRef.current.length === 21) {
+      rawLm = latestRawLandmarksRef.current;
+      fingerSig = latestFingerSignatureRef.current;
+    } else if (lastStableLandmarksRef.current && (Date.now() - lastStableTimeRef.current < 8000)) {
+      rawLm = lastStableLandmarksRef.current;
+      fingerSig = lastStableSignatureRef.current;
+    }
+
+    if (!rawLm || rawLm.length < 21) {
+      setSaveStatus('⚠️ कैमरे के सामने अपना हाथ लाएं और वह इशारा बनाकर रखें जो आप सिखाना चाहते हैं!');
+      return;
+    }
+
     setIsRecordingSign(true);
     setSaveStatus('डेटाबेस में सेव हो रहा है...');
 
-    // Extract live hand pose if camera is active
-    let landmarksToSave: number[][] = [];
-    if (latestRawLandmarksRef.current && latestRawLandmarksRef.current.length === 21) {
-      const rawLm = latestRawLandmarksRef.current;
-      const wrist = rawLm[0];
-      const palmSize = Math.max(Math.hypot(wrist.x - rawLm[9].x, wrist.y - rawLm[9].y), 0.05);
-      landmarksToSave = rawLm.map((p: any) => [
-        (p.x - wrist.x) / palmSize,
-        (p.y - wrist.y) / palmSize,
-        (p.z - wrist.z) / palmSize
-      ]);
-    }
+    const wrist = rawLm[0];
+    const palmSize = Math.max(Math.hypot(wrist.x - rawLm[9].x, wrist.y - rawLm[9].y), 0.05);
+    const landmarksToSave = rawLm.map((p: any) => [
+      (p.x - wrist.x) / palmSize,
+      (p.y - wrist.y) / palmSize,
+      (p.z - wrist.z) / palmSize
+    ]);
 
     try {
       const res = await fetch('/api/signs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          nameHindi: newSignHindi,
-          nameEnglish: newSignEnglish || newSignHindi,
+          nameHindi: nameH,
+          nameEnglish: newSignEnglish.trim() || nameH,
           category: newSignCategory,
           landmarksSample: landmarksToSave,
-          fingerSignature: latestFingerSignatureRef.current || null,
+          fingerSignature: fingerSig || latestFingerSignatureRef.current || null,
           recordedBy: 'College Employee'
         })
       });
       const data = await res.json();
       if (data.success) {
-        const hasLivePose = landmarksToSave.length === 21 || latestFingerSignatureRef.current;
-        setSaveStatus(`✅ साइन "${newSignHindi}" ${hasLivePose ? 'लाइव AI फिंगर पोज़ के साथ' : ''} सेव हो गया!`);
-        speakHindi(`${newSignHindi} सीख लिया गया है!`);
+        const msg = `🎉 साइन "${nameH}" लाइव AI हाथ पोज़ के साथ सफलतापूर्वक सेव हो गया!`;
+        setSaveStatus(msg);
+        setPoseCaptureNotice(msg);
+        speakHindi(`${nameH} साइन सीख लिया गया है!`);
         setNewSignHindi('');
         setNewSignEnglish('');
-        loadSigns();
+        lockedPoseRef.current = null;
+        setLockedPoseStatus('');
+        setLockedPoseInfo(null);
+        await loadSigns();
+        setTimeout(() => {
+          setSaveStatus('');
+          setPoseCaptureNotice('');
+        }, 5000);
+      } else {
+        setSaveStatus('❌ सेव करने में समस्या: ' + (data.error || 'अज्ञात त्रुटि'));
       }
-    } catch (e) {
-      setSaveStatus('❌ सेव करने में त्रुटि आई।');
+    } catch (e: any) {
+      setSaveStatus('❌ सेव करने में त्रुटि आई: ' + e.message);
     } finally {
       setIsRecordingSign(false);
     }
@@ -693,13 +1002,19 @@ export default function BoliSignPage() {
       return;
     }
 
-    if (!latestRawLandmarksRef.current || latestRawLandmarksRef.current.length < 21) {
+    let rawLm = latestRawLandmarksRef.current;
+    let fingerSig = latestFingerSignatureRef.current;
+    if ((!rawLm || rawLm.length < 21) && lastStableLandmarksRef.current && (Date.now() - lastStableTimeRef.current < 8000)) {
+      rawLm = lastStableLandmarksRef.current;
+      fingerSig = lastStableSignatureRef.current;
+    }
+
+    if (!rawLm || rawLm.length < 21) {
       setPoseCaptureNotice('⚠️ कैमरे के सामने अपना हाथ लाएं ताकि AI पोज़ को कैप्चर कर सके!');
       setTimeout(() => setPoseCaptureNotice(''), 4000);
       return;
     }
 
-    const rawLm = latestRawLandmarksRef.current;
     const wrist = rawLm[0];
     const palmSize = Math.max(Math.hypot(wrist.x - rawLm[9].x, wrist.y - rawLm[9].y), 0.05);
     const normalized = rawLm.map((p: any) => [
@@ -715,7 +1030,7 @@ export default function BoliSignPage() {
         body: JSON.stringify({
           id: signId,
           landmarksSample: normalized,
-          fingerSignature: latestFingerSignatureRef.current || null
+          fingerSignature: fingerSig || latestFingerSignatureRef.current || null
         })
       });
       const data = await res.json();
@@ -735,20 +1050,27 @@ export default function BoliSignPage() {
   const handleInstantLearn = async () => {
     const name = quickSignName.trim();
     if (!name) {
-      alert('कृपया नए साइन का नाम लिखें (जैसे: कैंटीन)!');
+      alert('कृपया नए साइन का नाम लिखें (जैसे: कैंटीन, कैरम)!');
       return;
     }
     if (!cameraActive) {
       alert('कृपया पहले "कैमरा ऑन करें" बटन दबाएं ताकि हाथ की उंगलियां दिख सकें!');
       return;
     }
-    if (!latestRawLandmarksRef.current || latestRawLandmarksRef.current.length < 21) {
+
+    let rawLm = latestRawLandmarksRef.current;
+    let fingerSig = latestFingerSignatureRef.current;
+    if ((!rawLm || rawLm.length < 21) && lastStableLandmarksRef.current && (Date.now() - lastStableTimeRef.current < 8000)) {
+      rawLm = lastStableLandmarksRef.current;
+      fingerSig = lastStableSignatureRef.current;
+    }
+
+    if (!rawLm || rawLm.length < 21) {
       alert('कृपया कैमरे के सामने अपना हाथ लाएं और वह नया इशारा बनाएं जो सिखाना चाहते हैं!');
       return;
     }
 
     setIsRecordingSign(true);
-    const rawLm = latestRawLandmarksRef.current;
     const wrist = rawLm[0];
     const palmSize = Math.max(Math.hypot(wrist.x - rawLm[9].x, wrist.y - rawLm[9].y), 0.05);
     const landmarksToSave = rawLm.map((p: any) => [
@@ -766,7 +1088,7 @@ export default function BoliSignPage() {
           nameEnglish: name,
           category: 'college',
           landmarksSample: landmarksToSave,
-          fingerSignature: latestFingerSignatureRef.current || null,
+          fingerSignature: fingerSig || latestFingerSignatureRef.current || null,
           recordedBy: 'Hackathon Live Demo'
         })
       });
@@ -942,469 +1264,275 @@ export default function BoliSignPage() {
         </button>
       </nav>
 
-      {/* TAB 1: LIVE INTERPRETER (Always mounted so camera tracking is continuous across tabs) */}
-      <div style={{ display: activeTab === 'interpret' ? 'grid' : 'none', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
-          {/* Left: Camera & Canvas */}
-          <div className="glass-panel" style={{ padding: '16px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-              <div>
-                <h3 style={{ fontSize: '16px', fontWeight: 700 }}>लाइव विज़न स्क्रीन (3D Hand Skeleton)</h3>
-                <span style={{ fontSize: '12px', color: '#10b981' }}>{fingerStates}</span>
-              </div>
+      {/* SHARED VIEW: TAB 1 (INTERPRETER) & TAB 2 (COLLEGE EMPLOYEE TRAINING) */}
+      <div style={{ display: activeTab === 'reverse' ? 'none' : 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '20px' }}>
+        {/* Left Column: Live Vision Screen (3D Hand Skeleton, Camera / Video Controls, Instant Audio Test Bar) */}
+        <div className="glass-panel" style={{ padding: '16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+            <div>
+              <h3 style={{ fontSize: '16px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Camera size={18} style={{ color: '#10b981' }} />
+                लाइव विज़न स्क्रीन (3D Hand Skeleton)
+              </h3>
+              <span style={{ fontSize: '12px', color: '#10b981' }}>{fingerStates}</span>
+            </div>
 
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                {!cameraActive ? (
-                  <>
-                    <button onClick={startCamera} className="btn-emerald" style={{ padding: '8px 14px', fontSize: '13px' }}>
-                      📷 कैमरा ऑन करें
-                    </button>
-                    <button 
-                      onClick={() => playDemoVideo('/demo1.mp4', 'demo1.mp4')} 
-                      className="btn-purple" 
-                      style={{ padding: '8px 14px', fontSize: '13px', background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
-                    >
-                      🎬 demo1.mp4 टेस्ट करें
-                    </button>
-                    <button 
-                      onClick={() => fileInputRef.current?.click()} 
-                      className="btn-glass" 
-                      style={{ padding: '8px 12px', fontSize: '13px' }}
-                      title="अपनी कोई अन्य वीडियो फ़ाइल टेस्ट करें"
-                    >
-                      📁 अन्य वीडियो
-                    </button>
-                    <input 
-                      type="file" 
-                      ref={fileInputRef} 
-                      onChange={handleFileUpload} 
-                      accept="video/*" 
-                      style={{ display: 'none' }} 
-                    />
-                  </>
-                ) : (
-                  <button onClick={stopCamera} className="btn-danger" style={{ padding: '8px 16px', fontSize: '13px' }}>
-                    {isVideoFileMode ? '⏹️ वीडियो बंद करें' : '⏹️ कैमरा बंद करें'}
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+              {!cameraActive ? (
+                <>
+                  <button onClick={startCamera} className="btn-emerald" style={{ padding: '8px 14px', fontSize: '13px' }}>
+                    📷 कैमरा ऑन करें
                   </button>
-                )}
-              </div>
-            </div>
-
-            {/* Viewfinder */}
-            <div style={{ 
-              position: 'relative', 
-              width: '100%', 
-              height: '360px', 
-              borderRadius: '14px', 
-              overflow: 'hidden', 
-              background: '#040711',
-              border: '2px solid rgba(255, 255, 255, 0.08)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}>
-              {/* Hidden video stream source */}
-              <video 
-                ref={videoRef} 
-                playsInline 
-                muted 
-                autoPlay
-                style={{ position: 'absolute', opacity: 0, width: '1px', height: '1px', pointerEvents: 'none' }} 
-              />
-              
-              {/* Active display canvas */}
-              <canvas 
-                ref={canvasRef} 
-                width={640} 
-                height={480} 
-                style={{ width: '100%', height: '100%', objectFit: 'contain' }} 
-              />
-
-              {isVideoFileMode && cameraActive && (
-                <div style={{
-                  position: 'absolute',
-                  top: '12px',
-                  right: '12px',
-                  background: 'rgba(99, 102, 241, 0.85)',
-                  backdropFilter: 'blur(8px)',
-                  padding: '6px 12px',
-                  borderRadius: '20px',
-                  fontSize: '11px',
-                  fontWeight: 700,
-                  color: '#ffffff',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px'
-                }}>
-                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#4ade80', display: 'inline-block' }} />
-                  वीडियो टेस्ट मोड: {currentVideoName}
-                </div>
-              )}
-
-              {!cameraActive && (
-                <div style={{ position: 'absolute', textAlign: 'center', padding: '20px', maxWidth: '480px' }}>
-                  {cameraErrorNotice ? (
-                    <div style={{
-                      background: 'rgba(239, 68, 68, 0.15)',
-                      border: '1px solid rgba(239, 68, 68, 0.4)',
-                      borderRadius: '12px',
-                      padding: '14px 16px',
-                      marginBottom: '14px',
-                      textAlign: 'left'
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-                        <AlertCircle size={22} style={{ color: '#ef4444', flexShrink: 0, marginTop: '2px' }} />
-                        <div>
-                          <h4 style={{ color: '#f87171', fontSize: '14px', fontWeight: 700, margin: '0 0 4px 0' }}>
-                            कैमरा समस्या का समाधान:
-                          </h4>
-                          <p style={{ color: '#fca5a5', fontSize: '13px', margin: 0, lineHeight: 1.4 }}>
-                            {cameraErrorNotice}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <Camera size={44} style={{ color: '#475569', marginBottom: '8px' }} />
-                      <p style={{ color: 'var(--text-secondary)', fontSize: '14px', marginBottom: '14px' }}>
-                        हाथ के इशारे पहचानने के लिए कैमरा ऑन करें या रिकॉर्डेड वीडियो टेस्ट करें:
-                      </p>
-                    </>
-                  )}
-                  <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', flexWrap: 'wrap' }}>
-                    <button onClick={startCamera} className="btn-emerald" style={{ padding: '10px 18px' }}>
-                      {cameraErrorNotice ? '🔄 दोबारा कोशिश करें' : '📷 कैमरा स्टार्ट करें'}
-                    </button>
-                    <button 
-                      onClick={() => playDemoVideo('/demo1.mp4', 'demo1.mp4')} 
-                      className="btn-purple" 
-                      style={{ padding: '10px 18px', background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
-                    >
-                      🎬 demo1.mp4 टेस्ट करें
-                    </button>
-                    <button 
-                      onClick={() => fileInputRef.current?.click()} 
-                      className="btn-glass" 
-                      style={{ padding: '10px 14px' }}
-                    >
-                      📁 फ़ाइल चुनें
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Detected Badge */}
-              <div style={{
-                position: 'absolute',
-                bottom: '10px',
-                left: '10px',
-                right: '10px',
-                background: 'rgba(10, 14, 23, 0.88)',
-                backdropFilter: 'blur(8px)',
-                padding: '10px 14px',
-                borderRadius: '10px',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center'
-              }}>
-                <div>
-                  <span style={{ fontSize: '10px', color: '#94a3b8', textTransform: 'uppercase' }}>पहचाना गया इशारा</span>
-                  <h3 style={{ fontSize: '20px', fontWeight: 800, color: '#10b981', margin: 0 }}>
-                    {currentSign}
-                  </h3>
-                </div>
-
-                {isSpeaking && (
-                  <div style={{ display: 'flex', gap: '3px' }}>
-                    <span className="audio-bar" />
-                    <span className="audio-bar" />
-                    <span className="audio-bar" />
-                    <span className="audio-bar" />
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Instant Hackathon 1-Click Sign Trainer Card */}
-            <div style={{
-              marginTop: '14px',
-              background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(16, 185, 129, 0.15))',
-              border: '1px solid rgba(99, 102, 241, 0.4)',
-              borderRadius: '12px',
-              padding: '12px 16px',
-              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)'
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Sparkles size={18} style={{ color: '#fbbf24' }} />
-                  <span style={{ fontSize: '14px', fontWeight: 800, color: '#f8fafc' }}>
-                    ⚡ हैकथॉन लाइव डेमो: 5 सेकंड में नया साइन सिखाएं
-                  </span>
-                </div>
-                <span style={{
-                  fontSize: '11px',
-                  padding: '3px 10px',
-                  borderRadius: '12px',
-                  background: cameraActive && handsDetectedCount > 0 ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.25)',
-                  color: cameraActive && handsDetectedCount > 0 ? '#4ade80' : '#f87171',
-                  fontWeight: 700,
-                  border: `1px solid ${cameraActive && handsDetectedCount > 0 ? 'rgba(16, 185, 129, 0.5)' : 'rgba(239, 68, 68, 0.4)'}`
-                }}>
-                  {cameraActive ? (handsDetectedCount > 0 ? '✋ हाथ डिटेक्टेड (Live)' : '⚠️ कैमरे में हाथ दिखाएं') : '📷 पहले कैमरा चालू करें'}
-                </span>
-              </div>
-
-              <p style={{ fontSize: '12px', color: '#cbd5e1', margin: '0 0 10px 0', lineHeight: 1.4 }}>
-                {cameraActive && handsDetectedCount > 0
-                  ? `AI द्वारा पहचानी गई लाइव उंगलियां: ${fingerStates}`
-                  : 'कैमरे के सामने कोई भी नया इशारा बनाएं (जैसे 3 उंगलियां), नीचे नाम लिखें और 1-क्लिक में सिखाएं!'}
-              </p>
-
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                <input
-                  type="text"
-                  placeholder="नया साइन नाम लिखें (जैसे: कैंटीन, फीस, खेल मैदान...)"
-                  value={quickSignName}
-                  onChange={e => setQuickSignName(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') handleInstantLearn(); }}
-                  style={{
-                    flex: '1',
-                    minWidth: '220px',
-                    background: 'rgba(0, 0, 0, 0.5)',
-                    border: '1px solid rgba(255, 255, 255, 0.2)',
-                    borderRadius: '8px',
-                    padding: '9px 12px',
-                    color: '#ffffff',
-                    fontSize: '13px'
-                  }}
-                />
-                <button
-                  onClick={handleInstantLearn}
-                  disabled={isRecordingSign}
-                  className="btn-emerald"
-                  style={{
-                    padding: '9px 16px',
-                    fontSize: '13px',
-                    fontWeight: 700,
-                    background: 'linear-gradient(135deg, #10b981, #059669)',
-                    boxShadow: '0 0 14px rgba(16, 185, 129, 0.4)',
-                    cursor: 'pointer'
-                  }}
-                >
-                  🎯 {isRecordingSign ? 'सेव हो रहा है...' : 'तुरंत सिखाएं (1-Click Learn)'}
+                  <button 
+                    onClick={() => playDemoVideo('/demo1.mp4', 'demo1.mp4')} 
+                    className="btn-purple" 
+                    style={{ padding: '8px 14px', fontSize: '13px' }}
+                  >
+                    🎬 demo1.mp4
+                  </button>
+                  <button 
+                    onClick={() => fileInputRef.current?.click()} 
+                    className="btn-glass" 
+                    style={{ padding: '8px 12px', fontSize: '13px' }}
+                    title="अपनी कोई अन्य वीडियो फ़ाइल टेस्ट करें"
+                  >
+                    📁 अन्य वीडियो
+                  </button>
+                  <input 
+                    type="file" 
+                    ref={fileInputRef} 
+                    onChange={handleFileUpload} 
+                    accept="video/*" 
+                    style={{ display: 'none' }} 
+                  />
+                </>
+              ) : (
+                <button onClick={stopCamera} className="btn-danger" style={{ padding: '8px 16px', fontSize: '13px' }}>
+                  {isVideoFileMode ? '⏹️ वीडियो बंद करें' : '⏹️ कैमरा बंद करें'}
                 </button>
-              </div>
+              )}
             </div>
-
-            {/* Quick Test Bar with Base + Custom Employee Signs */}
-            <div style={{ marginTop: '14px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <span style={{ fontSize: '13px', color: '#38bdf8', fontWeight: 700 }}>
-                  👇 तुरंत आवाज़ टेस्ट करने के लिए क्लिक करें:
-                </span>
-                {customSigns.length > 0 && (
-                  <span style={{ fontSize: '11px', background: 'rgba(16, 185, 129, 0.2)', color: '#34d399', padding: '2px 8px', borderRadius: '12px', fontWeight: 600 }}>
-                    ✨ {customSigns.length} नया साइन जोड़ा गया
-                  </span>
-                )}
-              </div>
-              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                {[
-                  { name: 'नमस्ते', icon: '✋' },
-                  { name: 'पानी', icon: '🤏' },
-                  { name: 'मदद चाहिए (SOS)', icon: '🤙' },
-                  { name: 'लाइब्रेरी (कॉलेज)', icon: '✌️' },
-                  { name: 'अटेंडेंस', icon: '☝️' },
-                  { name: 'हाँ', icon: '👍' },
-                  { name: 'नहीं', icon: '👎' },
-                  { name: 'खाना', icon: '🤌' },
-                  { name: 'डॉक्टर', icon: '🩺' },
-                  { name: 'धन्यवाद', icon: '🙏' }
-                ].map(item => (
-                  <button
-                    key={item.name}
-                    onClick={() => handleQuickTest(item.name)}
-                    style={{
-                      background: 'rgba(255, 255, 255, 0.05)',
-                      border: '1px solid rgba(255, 255, 255, 0.1)',
-                      color: '#f8fafc',
-                      padding: '6px 10px',
-                      borderRadius: '8px',
-                      fontSize: '12px',
-                      cursor: 'pointer',
-                      fontWeight: 600
-                    }}
-                  >
-                    {item.icon} {item.name}
-                  </button>
-                ))}
-
-                {/* Custom Employee Trained Signs */}
-                {customSigns.map(cs => (
-                  <button
-                    key={cs.id}
-                    onClick={() => handleQuickTest(cs.nameHindi)}
-                    style={{
-                      background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.25), rgba(16, 185, 129, 0.25))',
-                      border: '1px solid #3b82f6',
-                      color: '#67e8f9',
-                      padding: '6px 12px',
-                      borderRadius: '8px',
-                      fontSize: '12px',
-                      cursor: 'pointer',
-                      fontWeight: 700,
-                      boxShadow: '0 0 10px rgba(59, 130, 246, 0.3)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '4px'
-                    }}
-                  >
-                    ✨ {cs.nameHindi}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Notice banner for live pose capture */}
-            {poseCaptureNotice && (
-              <div style={{
-                marginTop: '12px',
-                background: poseCaptureNotice.includes('⚠️') ? 'rgba(234, 179, 8, 0.2)' : 'rgba(16, 185, 129, 0.2)',
-                border: `1px solid ${poseCaptureNotice.includes('⚠️') ? 'rgba(234, 179, 8, 0.4)' : 'rgba(16, 185, 129, 0.4)'}`,
-                borderRadius: '10px',
-                padding: '10px 14px',
-                color: '#ffffff',
-                fontSize: '13px',
-                fontWeight: 600,
-                textAlign: 'center'
-              }}>
-                {poseCaptureNotice}
-              </div>
-            )}
-
-            {/* Custom Employee Trained Signs Card on Main Screen */}
-            {customSigns.length > 0 && (
-              <div style={{
-                marginTop: '16px',
-                background: 'rgba(59, 130, 246, 0.08)',
-                border: '1px solid rgba(59, 130, 246, 0.25)',
-                borderRadius: '12px',
-                padding: '14px 16px'
-              }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ fontSize: '18px' }}>🎓</span>
-                    <div>
-                      <h4 style={{ fontSize: '14px', fontWeight: 700, color: '#93c5fd', margin: 0 }}>
-                        कॉलेज एम्प्लॉई द्वारा जोड़े गए विशेष साइन:
-                      </h4>
-                      <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
-                        ये साइन सीधे AI मॉडल और स्क्रीन पर एक्टिव हैं
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setActiveTab('train')}
-                    style={{
-                      background: 'rgba(59, 130, 246, 0.2)',
-                      border: '1px solid rgba(59, 130, 246, 0.4)',
-                      color: '#bfdbfe',
-                      padding: '4px 10px',
-                      borderRadius: '6px',
-                      fontSize: '11px',
-                      cursor: 'pointer',
-                      fontWeight: 600
-                    }}
-                  >
-                    + नया साइन जोड़ें
-                  </button>
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '10px' }}>
-                  {customSigns.map(cs => (
-                      <div
-                        key={cs.id}
-                        style={{
-                          background: 'rgba(15, 23, 42, 0.7)',
-                          border: '1px solid rgba(255, 255, 255, 0.1)',
-                          borderRadius: '10px',
-                          padding: '10px 12px',
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center'
-                        }}
-                      >
-                        <div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <span style={{ color: '#4ade80', fontSize: '10px' }}>● एक्टिव</span>
-                            <span style={{ fontSize: '10px', color: '#64748b' }}>({cs.category})</span>
-                          </div>
-                          <h5 style={{ fontSize: '15px', fontWeight: 700, color: '#f8fafc', margin: '2px 0 0 0' }}>
-                            {cs.nameHindi}
-                          </h5>
-                          <span style={{ fontSize: '10px', color: cs.landmarksSample && cs.landmarksSample.length === 21 ? '#34d399' : '#f59e0b' }}>
-                            {cs.landmarksSample && cs.landmarksSample.length === 21 ? '✓ पोज़ रिकॉर्डेड' : '⚠️ पोज़ रिकॉर्ड करें'}
-                          </span>
-                        </div>
-
-                        <div style={{ display: 'flex', gap: '6px' }}>
-                          <button
-                            onClick={() => handleQuickTest(cs.nameHindi)}
-                            style={{
-                              background: 'rgba(16, 185, 129, 0.2)',
-                              border: '1px solid rgba(16, 185, 129, 0.3)',
-                              color: '#34d399',
-                              padding: '5px 9px',
-                              borderRadius: '6px',
-                              fontSize: '11px',
-                              cursor: 'pointer',
-                              fontWeight: 600
-                            }}
-                          >
-                            🔊 बोलें
-                          </button>
-                          <button
-                            onClick={() => handleCaptureLivePose(cs.id, cs.nameHindi)}
-                            style={{
-                              background: 'rgba(99, 102, 241, 0.25)',
-                              border: '1px solid rgba(99, 102, 241, 0.4)',
-                              color: '#c7d2fe',
-                              padding: '5px 9px',
-                              borderRadius: '6px',
-                              fontSize: '11px',
-                              cursor: 'pointer',
-                              fontWeight: 600
-                            }}
-                            title="कैमरे से इस साइन के लिए लाइव हाथ पोज़ रिकॉर्ड करें"
-                          >
-                            📷 पोज़
-                          </button>
-                          <button
-                            onClick={() => handleDeleteSign(cs.id, cs.nameHindi)}
-                            style={{
-                              background: 'rgba(239, 68, 68, 0.2)',
-                              border: '1px solid rgba(239, 68, 68, 0.4)',
-                              color: '#f87171',
-                              padding: '5px 8px',
-                              borderRadius: '6px',
-                              fontSize: '11px',
-                              cursor: 'pointer',
-                              fontWeight: 600
-                            }}
-                            title="साइन हटाएं"
-                          >
-                            🗑️
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              </div>
-            )}
           </div>
 
-          {/* Right: AI Sentence Builder */}
+          {/* Viewfinder */}
+          <div style={{ 
+            position: 'relative', 
+            width: '100%', 
+            height: '360px', 
+            borderRadius: '14px', 
+            overflow: 'hidden', 
+            background: '#040711',
+            border: '2px solid rgba(255, 255, 255, 0.08)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}>
+            {/* Hidden video stream source */}
+            <video 
+              ref={videoRef} 
+              playsInline 
+              muted 
+              autoPlay
+              style={{ position: 'absolute', opacity: 0, width: '1px', height: '1px', pointerEvents: 'none' }} 
+            />
+            
+            {/* Active display canvas */}
+            <canvas 
+              ref={canvasRef} 
+              width={640} 
+              height={480} 
+              style={{ width: '100%', height: '100%', objectFit: 'contain' }} 
+            />
+
+            {isVideoFileMode && cameraActive && (
+              <div style={{
+                position: 'absolute',
+                top: '12px',
+                right: '12px',
+                background: 'rgba(99, 102, 241, 0.85)',
+                backdropFilter: 'blur(8px)',
+                padding: '6px 12px',
+                borderRadius: '20px',
+                fontSize: '11px',
+                fontWeight: 700,
+                color: '#ffffff',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#4ade80', display: 'inline-block' }} />
+                वीडियो टेस्ट मोड: {currentVideoName}
+              </div>
+            )}
+
+            {!cameraActive && (
+              <div style={{ position: 'absolute', textAlign: 'center', padding: '20px', maxWidth: '480px' }}>
+                {cameraErrorNotice ? (
+                  <div style={{
+                    background: 'rgba(239, 68, 68, 0.15)',
+                    border: '1px solid rgba(239, 68, 68, 0.4)',
+                    borderRadius: '12px',
+                    padding: '14px 16px',
+                    marginBottom: '14px',
+                    textAlign: 'left'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                      <AlertCircle size={22} style={{ color: '#ef4444', flexShrink: 0, marginTop: '2px' }} />
+                      <div>
+                        <h4 style={{ color: '#f87171', fontSize: '14px', fontWeight: 700, margin: '0 0 4px 0' }}>
+                          कैमरा समस्या का समाधान:
+                        </h4>
+                        <p style={{ color: '#fca5a5', fontSize: '13px', margin: 0, lineHeight: 1.4 }}>
+                          {cameraErrorNotice}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <Camera size={44} style={{ color: '#475569', marginBottom: '8px' }} />
+                    <p style={{ color: 'var(--text-secondary)', fontSize: '14px', marginBottom: '14px' }}>
+                      हाथ के इशारे पहचानने और नया साइन सिखाने के लिए कैमरा ऑन करें:
+                    </p>
+                  </>
+                )}
+                <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', flexWrap: 'wrap' }}>
+                  <button onClick={startCamera} className="btn-emerald" style={{ padding: '10px 18px' }}>
+                    {cameraErrorNotice ? '🔄 दोबारा कोशिश करें' : '📷 कैमरा स्टार्ट करें'}
+                  </button>
+                  <button 
+                    onClick={() => playDemoVideo('/demo1.mp4', 'demo1.mp4')} 
+                    className="btn-purple" 
+                    style={{ padding: '10px 18px' }}
+                  >
+                    🎬 demo1.mp4 टेस्ट करें
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Detected Badge */}
+            <div style={{
+              position: 'absolute',
+              bottom: '10px',
+              left: '10px',
+              right: '10px',
+              background: 'rgba(10, 14, 23, 0.88)',
+              backdropFilter: 'blur(8px)',
+              padding: '10px 14px',
+              borderRadius: '10px',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <div>
+                <span style={{ fontSize: '10px', color: '#94a3b8', textTransform: 'uppercase' }}>पहचाना गया इशारा</span>
+                <h3 style={{ fontSize: '20px', fontWeight: 800, color: '#10b981', margin: 0 }}>
+                  {currentSign}
+                </h3>
+              </div>
+
+              {isSpeaking && (
+                <div style={{ display: 'flex', gap: '3px' }}>
+                  <span className="audio-bar" />
+                  <span className="audio-bar" />
+                  <span className="audio-bar" />
+                  <span className="audio-bar" />
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Quick Test Bar with Base + Custom Employee Signs */}
+          <div style={{ marginTop: '14px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <span style={{ fontSize: '13px', color: '#38bdf8', fontWeight: 700 }}>
+                👇 तुरंत आवाज़ टेस्ट करने के लिए क्लिक करें:
+              </span>
+              {customSigns.length > 0 && (
+                <span style={{ fontSize: '11px', background: 'rgba(16, 185, 129, 0.2)', color: '#34d399', padding: '2px 8px', borderRadius: '12px', fontWeight: 600 }}>
+                  ✨ {customSigns.length} नया साइन एक्टिव
+                </span>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              {[
+                { name: 'नमस्ते', icon: '✋' },
+                { name: 'पानी', icon: '🤏' },
+                { name: 'मदद चाहिए (SOS)', icon: '🤙' },
+                { name: 'लाइब्रेरी (कॉलेज)', icon: '✌️' },
+                { name: 'अटेंडेंस', icon: '☝️' },
+                { name: 'हाँ', icon: '👍' },
+                { name: 'नहीं', icon: '👎' },
+                { name: 'खाना', icon: '🤌' },
+                { name: 'डॉक्टर', icon: '🩺' },
+                { name: 'धन्यवाद', icon: '🙏' }
+              ].map(item => (
+                <button
+                  key={item.name}
+                  onClick={() => handleQuickTest(item.name)}
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    color: '#f8fafc',
+                    padding: '6px 10px',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    cursor: 'pointer',
+                    fontWeight: 600
+                  }}
+                >
+                  {item.icon} {item.name}
+                </button>
+              ))}
+
+              {/* Custom Employee Trained Signs */}
+              {customSigns.map(cs => (
+                <button
+                  key={cs.id}
+                  onClick={() => handleQuickTest(cs.nameHindi)}
+                  style={{
+                    background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.25), rgba(16, 185, 129, 0.25))',
+                    border: '1px solid #3b82f6',
+                    color: '#67e8f9',
+                    padding: '6px 12px',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    cursor: 'pointer',
+                    fontWeight: 700,
+                    boxShadow: '0 0 10px rgba(59, 130, 246, 0.3)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px'
+                  }}
+                >
+                  ✨ {cs.nameHindi}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Notice banner for live pose capture */}
+          {poseCaptureNotice && (
+            <div style={{
+              marginTop: '12px',
+              background: poseCaptureNotice.includes('⚠️') ? 'rgba(234, 179, 8, 0.2)' : 'rgba(16, 185, 129, 0.2)',
+              border: `1px solid ${poseCaptureNotice.includes('⚠️') ? 'rgba(234, 179, 8, 0.4)' : 'rgba(16, 185, 129, 0.4)'}`,
+              borderRadius: '10px',
+              padding: '10px 14px',
+              color: '#ffffff',
+              fontSize: '13px',
+              fontWeight: 600,
+              textAlign: 'center'
+            }}>
+              {poseCaptureNotice}
+            </div>
+          )}
+        </div>
+
+        {/* RIGHT COLUMN (TAB 1: LIVE INTERPRETER MODE) */}
+        {activeTab === 'interpret' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             {/* Sentence Builder */}
             <div className="glass-panel" style={{ padding: '20px' }}>
@@ -1496,284 +1624,748 @@ export default function BoliSignPage() {
                 {fluentHindiSentence || 'वाक्य यहाँ साफ़ हिंदी में दिखाई देगा और स्पीकर से बोलेगा...'}
               </div>
             </div>
-          </div>
-        </div>
 
-      {/* TAB 2: TRAINING STUDIO */}
-      <div style={{ display: activeTab === 'train' ? 'grid' : 'none', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
-          <div className="glass-panel" style={{ padding: '20px' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 700, marginBottom: '4px' }}>कॉलेज एम्प्लॉई ट्रेनिंग स्टूडियो</h3>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '12px', marginBottom: '16px' }}>
-              कॉलेज के एम्प्लॉई से नया इशारा ऐप में जोड़ें
-            </p>
-
-            {/* Live AI Hand Tracker Monitor */}
+            {/* Instant Hackathon 1-Click Fast Trainer Card */}
             <div style={{
-              background: 'rgba(59, 130, 246, 0.1)',
-              border: '1px solid rgba(59, 130, 246, 0.3)',
-              borderRadius: '10px',
-              padding: '12px 14px',
-              marginBottom: '16px'
+              background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(16, 185, 129, 0.15))',
+              border: '1px solid rgba(99, 102, 241, 0.4)',
+              borderRadius: '12px',
+              padding: '12px 16px'
             }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                <span style={{ fontSize: '13px', fontWeight: 700, color: '#93c5fd', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  🤖 लाइव AI कैमरा सेंसर:
-                </span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Sparkles size={18} style={{ color: '#fbbf24' }} />
+                  <span style={{ fontSize: '14px', fontWeight: 800, color: '#f8fafc' }}>
+                    ⚡ 1-क्लिक में तुरंत नया साइन सिखाएं
+                  </span>
+                </div>
                 <span style={{
                   fontSize: '11px',
-                  fontWeight: 700,
-                  padding: '2px 8px',
-                  borderRadius: '10px',
-                  background: cameraActive && handsDetectedCount > 0 ? 'rgba(16, 185, 129, 0.25)' : 'rgba(239, 68, 68, 0.2)',
-                  color: cameraActive && handsDetectedCount > 0 ? '#4ade80' : '#f87171'
+                  padding: '3px 10px',
+                  borderRadius: '12px',
+                  background: cameraActive && handsDetectedCount > 0 ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.25)',
+                  color: cameraActive && handsDetectedCount > 0 ? '#4ade80' : '#f87171',
+                  fontWeight: 700
                 }}>
-                  {cameraActive ? (handsDetectedCount > 0 ? '✋ हाथ डिटेक्टेड' : '⚠️ हाथ नहीं दिख रहा') : '📷 कैमरा बंद'}
+                  {cameraActive ? (handsDetectedCount > 0 ? '✋ हाथ लाइव' : '⚠️ हाथ दिखाएं') : '📷 कैमरा बंद'}
                 </span>
               </div>
-              <p style={{ fontSize: '12px', color: '#cbd5e1', margin: 0, lineHeight: 1.4 }}>
-                {cameraActive 
-                  ? (handsDetectedCount > 0 
-                      ? `पहचाना गया पैटर्न: ${fingerStates} (यह लाइव पोज़ तुरंत सेव होगा)` 
-                      : 'कैमरे के आगे हाथ लाएं ताकि AI आपकी उंगलियों की स्थिति पढ़ सके।')
-                  : 'सुझाव: पहले टैब 1 ("लाइव कैमरा") में जाकर "कैमरा स्टार्ट करें" दबाएं, फिर यहाँ नया साइन जोड़ें!'}
-              </p>
-            </div>
 
-            <div style={{ marginBottom: '14px' }}>
-              <label style={{ display: 'block', fontSize: '13px', marginBottom: '6px', color: 'var(--text-secondary)' }}>
-                साइन का हिंदी नाम*:
-              </label>
-              <input
-                type="text"
-                placeholder="जैसे: फीस काउंटर, कंप्यूटर लैब, खेल मैदान..."
-                value={newSignHindi}
-                onChange={e => setNewSignHindi(e.target.value)}
-                style={{
-                  width: '100%',
-                  background: 'rgba(0, 0, 0, 0.3)',
-                  border: '1px solid rgba(255, 255, 255, 0.1)',
-                  borderRadius: '8px',
-                  padding: '10px 14px',
-                  color: 'white',
-                  fontSize: '15px'
-                }}
-              />
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  placeholder="नया साइन नाम (जैसे: कैंटीन, फीस...)"
+                  value={quickSignName}
+                  onChange={e => setQuickSignName(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleInstantLearn(); }}
+                  style={{
+                    flex: '1',
+                    minWidth: '200px',
+                    background: 'rgba(0, 0, 0, 0.5)',
+                    border: '1px solid rgba(255, 255, 255, 0.2)',
+                    borderRadius: '8px',
+                    padding: '8px 12px',
+                    color: '#ffffff',
+                    fontSize: '13px'
+                  }}
+                />
+                <button
+                  onClick={handleInstantLearn}
+                  disabled={isRecordingSign}
+                  className="btn-emerald"
+                  style={{ padding: '8px 14px', fontSize: '13px', fontWeight: 700 }}
+                >
+                  🎯 {isRecordingSign ? 'सेव हो रहा...' : 'सिखाएं'}
+                </button>
+              </div>
             </div>
+          </div>
+        )}
 
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', fontSize: '13px', marginBottom: '6px', color: 'var(--text-secondary)' }}>
-                कैटेगरी:
-              </label>
-              <select
-                value={newSignCategory}
-                onChange={(e: any) => setNewSignCategory(e.target.value)}
-                style={{
-                  width: '100%',
-                  background: 'rgba(0, 0, 0, 0.3)',
-                  border: '1px solid rgba(255, 255, 255, 0.1)',
-                  borderRadius: '8px',
-                  padding: '10px 14px',
-                  color: 'white',
-                  fontSize: '14px'
+        {/* RIGHT COLUMN (TAB 2: COLLEGE EMPLOYEE TRAINING STUDIO) */}
+        {activeTab === 'train' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {/* Training Studio Form */}
+            <div className="glass-panel" style={{ padding: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+                <div>
+                  <h3 style={{ fontSize: '18px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <UserCheck size={20} style={{ color: '#10b981' }} />
+                    कॉलेज एम्प्लॉई ट्रेनिंग स्टूडियो
+                  </h3>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '12px', margin: '4px 0 0 0' }}>
+                    कॉलेज के नए स्थान या सेवा के लिए लाइव हाथ इशारा AI को सिखाएं
+                  </p>
+                </div>
+
+                <span style={{
+                  fontSize: '11px',
+                  padding: '4px 10px',
+                  borderRadius: '12px',
+                  background: 'rgba(16, 185, 129, 0.2)',
+                  color: '#34d399',
+                  fontWeight: 700,
+                  border: '1px solid rgba(16, 185, 129, 0.4)'
+                }}>
+                  🎓 कर्मचारी पोर्टल
+                </span>
+              </div>
+
+              {/* Live Hand Pose Sensor Monitor */}
+              <div style={{
+                background: cameraActive && handsDetectedCount > 0 ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                border: `1px solid ${cameraActive && handsDetectedCount > 0 ? 'rgba(16, 185, 129, 0.35)' : 'rgba(239, 68, 68, 0.35)'}`,
+                borderRadius: '10px',
+                padding: '12px 14px',
+                marginBottom: '16px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 700, color: cameraActive && handsDetectedCount > 0 ? '#4ade80' : '#f87171', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    🤖 लाइव कैमरा सेंसर स्थिति:
+                  </span>
+                  <span style={{
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    padding: '2px 8px',
+                    borderRadius: '10px',
+                    background: cameraActive && handsDetectedCount > 0 ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.25)',
+                    color: cameraActive && handsDetectedCount > 0 ? '#4ade80' : '#f87171'
+                  }}>
+                    {cameraActive ? (handsDetectedCount > 0 ? `🟢 हाथ डिटेक्टेड (${handsDetectedCount})` : '⚠️ हाथ नहीं दिख रहा') : '📷 कैमरा बंद'}
+                  </span>
+                </div>
+                <p style={{ fontSize: '12px', color: '#cbd5e1', margin: 0, lineHeight: 1.4 }}>
+                  {cameraActive 
+                    ? (handsDetectedCount > 0 
+                        ? `✅ लाइव उंगलियों का पैटर्न: ${fingerStates} (इशारा बनाकर रखें और नीचे सेव दबाएं)` 
+                        : '⚠️ कैमरे के सामने अपना हाथ लाएं और वह इशारा बनाकर रखें जो आप सिखाना चाहते हैं।')
+                    : '⚠️ कैमरा बंद है! नीचे "कैमरा ऑन करें" बटन दबाएं ताकि AI आपके हाथ की उंगलियां देख सके।'}
+                </p>
+                {!cameraActive && (
+                  <button 
+                    onClick={startCamera} 
+                    className="btn-emerald" 
+                    style={{ marginTop: '10px', padding: '6px 14px', fontSize: '12px' }}
+                  >
+                    📷 अभी कैमरा ऑन करें
+                  </button>
+                )}
+              </div>
+
+              {/* Step-by-Step Training Guide Banner */}
+              <div style={{
+                background: 'linear-gradient(135deg, rgba(30, 41, 59, 0.7), rgba(15, 23, 42, 0.8))',
+                border: '1px solid rgba(59, 130, 246, 0.3)',
+                borderRadius: '12px',
+                padding: '14px 16px',
+                marginBottom: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Sparkles size={16} style={{ color: '#38bdf8' }} />
+                  <span style={{ fontSize: '13px', fontWeight: 800, color: '#f8fafc' }}>
+                    यह कैसे काम करता है? (सरल 3 स्टेप्स):
+                  </span>
+                </div>
+                
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '8px' }}>
+                  <div style={{ background: 'rgba(255,255,255,0.04)', padding: '8px 10px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.06)' }}>
+                    <div style={{ color: '#38bdf8', fontWeight: 800, fontSize: '12px' }}>१. कैमरा ऑन करें</div>
+                    <div style={{ color: '#94a3b8', fontSize: '11px', marginTop: '2px' }}>ऊपर कैमरा चालू करें ताकि हाथ पर हरा स्केलेटन दिखे।</div>
+                  </div>
+                  <div style={{ background: 'rgba(255,255,255,0.04)', padding: '8px 10px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.06)' }}>
+                    <div style={{ color: '#fbbf24', fontWeight: 800, fontSize: '12px' }}>२. नया इशारा बनाएं</div>
+                    <div style={{ color: '#94a3b8', fontSize: '11px', marginTop: '2px' }}>कैमरे के सामने नया पोज़ बनाकर रखें (उदा. 3 उंगलियां)।</div>
+                  </div>
+                  <div style={{ background: 'rgba(255,255,255,0.04)', padding: '8px 10px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.06)' }}>
+                    <div style={{ color: '#34d399', fontWeight: 800, fontSize: '12px' }}>३. नाम लिख सेव करें</div>
+                    <div style={{ color: '#94a3b8', fontSize: '11px', marginTop: '2px' }}>नाम (उदा. "कैंटीन") लिखकर सेव बटन दबाएं!</div>
+                  </div>
+                </div>
+
+                <div style={{ fontSize: '12px', color: '#6ee7b7', background: 'rgba(16, 185, 129, 0.1)', padding: '8px 12px', borderRadius: '6px', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
+                  💡 <strong>तुरंत टेस्ट कैसे करें:</strong> सेव होने के बाद जैसे ही आप वही 3 उंगलियों वाला इशारा कैमरे के आगे करेंगे, AI तुरंत स्क्रीन पर <strong>"✓ कैंटीन"</strong> दिखाएगा और आवाज़ में बोलेगा!
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '13px', marginBottom: '6px', color: 'var(--text-secondary)' }}>
+                  साइन का हिंदी नाम*:
+                </label>
+                <input
+                  type="text"
+                  placeholder="जैसे: फीस काउंटर, कंप्यूटर लैब, खेल मैदान, सेमिनार हॉल..."
+                  value={newSignHindi}
+                  onChange={e => setNewSignHindi(e.target.value)}
+                  style={{
+                    width: '100%',
+                    background: 'rgba(0, 0, 0, 0.3)',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    borderRadius: '8px',
+                    padding: '10px 14px',
+                    color: 'white',
+                    fontSize: '15px'
+                  }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '13px', marginBottom: '6px', color: 'var(--text-secondary)' }}>
+                  साइन का अंग्रेजी नाम (वैकल्पिक):
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Fees Counter, Computer Lab..."
+                  value={newSignEnglish}
+                  onChange={e => setNewSignEnglish(e.target.value)}
+                  style={{
+                    width: '100%',
+                    background: 'rgba(0, 0, 0, 0.3)',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    borderRadius: '8px',
+                    padding: '10px 14px',
+                    color: 'white',
+                    fontSize: '14px'
+                  }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '13px', marginBottom: '6px', color: 'var(--text-secondary)' }}>
+                  कैटेगरी:
+                </label>
+                <select
+                  value={newSignCategory}
+                  onChange={(e: any) => setNewSignCategory(e.target.value)}
+                  style={{
+                    width: '100%',
+                    background: 'rgba(0, 0, 0, 0.3)',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    borderRadius: '8px',
+                    padding: '10px 14px',
+                    color: 'white',
+                    fontSize: '14px'
+                  }}
+                >
+                  <option value="college">कॉलेज संबंध (College Specific)</option>
+                  <option value="daily">दैनिक बातचीत (Daily Use)</option>
+                  <option value="emergency">आपातकालीन (Emergency)</option>
+                </select>
+              </div>
+
+              {/* Live Pose Locking Studio */}
+              <div style={{
+                marginBottom: '16px',
+                background: lockedPoseInfo ? 'rgba(16, 185, 129, 0.12)' : 'rgba(99, 102, 241, 0.1)',
+                border: `1px solid ${lockedPoseInfo ? 'rgba(16, 185, 129, 0.4)' : 'rgba(99, 102, 241, 0.3)'}`,
+                borderRadius: '10px',
+                padding: '12px 14px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 800, color: '#f8fafc' }}>
+                    ✋ हाथ पोज़ कैप्चर & लॉक
+                  </span>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#38bdf8' }}>
+                    {liveGestureName ? `वर्तमान: ${liveGestureName}` : ''}
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={handleLockCurrentPose}
+                    className="btn-purple"
+                    style={{
+                      flex: 1,
+                      minWidth: '180px',
+                      justifyContent: 'center',
+                      padding: '10px 14px',
+                      fontSize: '13px',
+                      fontWeight: 800,
+                      background: lockedPoseInfo ? 'rgba(16, 185, 129, 0.25)' : undefined
+                    }}
+                  >
+                    {lockedPoseInfo ? `🔒 पोज़ लॉक है (${lockedPoseInfo.label})` : '🔒 अभी यह पोज़ लॉक करें'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleCapturePoseCountdown}
+                    className="btn-glass"
+                    style={{
+                      padding: '10px 14px',
+                      fontSize: '13px',
+                      fontWeight: 700
+                    }}
+                    title="3 सेकंड का समय देकर पोज़ कैप्चर करें"
+                  >
+                    ⏱️ {countdownSeconds !== null ? `${countdownSeconds}...` : '३s टाइमर'}
+                  </button>
+
+                  {lockedPoseInfo && (
+                    <button
+                      type="button"
+                      onClick={handleUnlockPose}
+                      style={{
+                        background: 'rgba(239, 68, 68, 0.2)',
+                        border: '1px solid rgba(239, 68, 68, 0.4)',
+                        color: '#fca5a5',
+                        padding: '10px 12px',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        fontSize: '12px',
+                        fontWeight: 700
+                      }}
+                    >
+                      🔄 अनलॉक
+                    </button>
+                  )}
+                </div>
+
+                {lockedPoseInfo && (
+                  <div style={{
+                    fontSize: '12px',
+                    color: '#34d399',
+                    background: 'rgba(16, 185, 129, 0.15)',
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    border: '1px solid rgba(16, 185, 129, 0.3)',
+                    textAlign: 'center',
+                    fontWeight: 700
+                  }}>
+                    ✅ पोज़ लॉक: <strong>{lockedPoseInfo.label}</strong> (अब आप आराम से नाम लिखकर नीचे 'सेव' दबाएं)
+                  </div>
+                )}
+              </div>
+
+              <button
+                onClick={handleSaveSign}
+                disabled={isRecordingSign}
+                className="btn-emerald"
+                style={{ 
+                  width: '100%', 
+                  justifyContent: 'center', 
+                  padding: '12px',
+                  fontSize: '15px',
+                  fontWeight: 700
                 }}
               >
-                <option value="college">कॉलेज संबंध (College Specific)</option>
-                <option value="daily">दैनिक बातचीत (Daily Use)</option>
-                <option value="emergency">आपातकालीन (Emergency)</option>
-              </select>
+                <PlusCircle size={18} />
+                {isRecordingSign ? 'सेव हो रहा है...' : '🎯 नया साइन और लाइव हाथ पोज़ सेव करें'}
+              </button>
+
+              {saveStatus && (
+                <div style={{ 
+                  marginTop: '12px', 
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  background: saveStatus.includes('❌') || saveStatus.includes('⚠️') ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                  border: `1px solid ${saveStatus.includes('❌') || saveStatus.includes('⚠️') ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`,
+                  textAlign: 'center', 
+                  fontWeight: 600, 
+                  color: saveStatus.includes('❌') || saveStatus.includes('⚠️') ? '#f87171' : '#34d399', 
+                  fontSize: '13px' 
+                }}>
+                  {saveStatus}
+                </div>
+              )}
             </div>
 
+            {/* List of Trained Signs */}
+            <div className="glass-panel" style={{ padding: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <h3 style={{ fontSize: '16px', fontWeight: 700 }}>
+                  सिखाए गए साइन (कुल: {allSigns.length})
+                </h3>
+                <span style={{ fontSize: '11px', color: '#94a3b8' }}>
+                  {customSigns.length} कॉलेज एम्प्लॉई साइन
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '360px', overflowY: 'auto' }}>
+                {[
+                  ...allSigns.filter(s => !BASE_SIGN_IDS.includes(s.id)).reverse(),
+                  ...allSigns.filter(s => BASE_SIGN_IDS.includes(s.id))
+                ].map(s => {
+                  const isCustom = !BASE_SIGN_IDS.includes(s.id);
+                  const hasPose = Boolean((s.landmarksSample && s.landmarksSample.length === 21) || s.fingerSignature);
+                  return (
+                    <div
+                      key={s.id}
+                      style={{
+                        background: isCustom ? 'rgba(99, 102, 241, 0.08)' : 'rgba(255, 255, 255, 0.03)',
+                        border: `1px solid ${isCustom ? 'rgba(99, 102, 241, 0.3)' : 'rgba(255, 255, 255, 0.06)'}`,
+                        borderRadius: '8px',
+                        padding: '10px 14px',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        gap: '8px'
+                      }}
+                    >
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <h4 style={{ fontSize: '15px', fontWeight: 700, margin: 0, color: isCustom ? '#a5b4fc' : '#ffffff' }}>
+                            {s.nameHindi}
+                          </h4>
+                          {isCustom && (
+                            <span style={{ fontSize: '10px', background: 'rgba(99, 102, 241, 0.3)', color: '#c7d2fe', padding: '1px 6px', borderRadius: '6px', fontWeight: 700 }}>
+                              कस्टम
+                            </span>
+                          )}
+                        </div>
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                          {s.category.toUpperCase()} {s.recordedBy ? `• ${s.recordedBy}` : ''}
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                        <span style={{ 
+                          fontSize: '11px', 
+                          padding: '3px 10px',
+                          borderRadius: '10px',
+                          background: isCustom ? 'rgba(16, 185, 129, 0.25)' : 'rgba(59, 130, 246, 0.2)',
+                          color: isCustom ? '#34d399' : '#93c5fd',
+                          fontWeight: 700,
+                          border: `1px solid ${isCustom ? 'rgba(16, 185, 129, 0.4)' : 'rgba(59, 130, 246, 0.3)'}`
+                        }}>
+                          {isCustom ? (hasPose ? '✓ 3D पोज़ एक्टिव' : '⚠️ पोज़ सेट करें') : '✓ डिफ़ॉल्ट AI साइन'}
+                        </span>
+
+                        <button
+                          onClick={() => handleCaptureLivePose(s.id, s.nameHindi)}
+                          style={{
+                            background: 'rgba(99, 102, 241, 0.2)',
+                            border: '1px solid rgba(99, 102, 241, 0.4)',
+                            color: '#c7d2fe',
+                            padding: '6px 10px',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontSize: '12px',
+                            fontWeight: 600
+                          }}
+                          title="कैमरे से इस साइन के लिए हाथ का लाइव पोज़ रिकॉर्ड/अपडेट करें"
+                        >
+                          📷 पोज़ अपडेट
+                        </button>
+
+                        <button
+                          onClick={() => speakHindi(s.nameHindi)}
+                          style={{
+                            background: 'rgba(59, 130, 246, 0.15)',
+                            border: '1px solid rgba(59, 130, 246, 0.3)',
+                            color: '#60a5fa',
+                            padding: '6px 10px',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontSize: '12px'
+                          }}
+                        >
+                          🔊 सुनें
+                        </button>
+
+                        {isCustom && (
+                          <button
+                            onClick={() => handleDeleteSign(s.id, s.nameHindi)}
+                            style={{
+                              background: 'rgba(239, 68, 68, 0.2)',
+                              border: '1px solid rgba(239, 68, 68, 0.4)',
+                              color: '#f87171',
+                              padding: '6px 10px',
+                              borderRadius: '6px',
+                              cursor: 'pointer',
+                              fontSize: '12px'
+                            }}
+                            title="साइन हटाएं"
+                          >
+                            🗑️
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* TAB 3: REVERSE MODE (Two-Way Voice to Text Hub) */}
+      <div style={{ display: activeTab === 'reverse' ? 'block' : 'none', maxWidth: '780px', margin: '0 auto' }}>
+        <div className="glass-panel" style={{ padding: '28px', textAlign: 'center' }}>
+          
+          {/* Header */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', marginBottom: '8px' }}>
+            <div style={{ background: 'rgba(139, 92, 246, 0.2)', padding: '10px', borderRadius: '50%', color: '#a78bfa' }}>
+              <Mic size={24} />
+            </div>
+            <h2 style={{ fontSize: '22px', fontWeight: 800, margin: 0 }}>
+              रिवर्स मोड: टू-वे संवाद (Voice-to-Text)
+            </h2>
+          </div>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginBottom: '24px', maxWidth: '560px', margin: '0 auto 24px auto' }}>
+            सामान्य व्यक्ति माइक दबाकर हिंदी में बोलेगा, और AI तुरंत उसे बड़े अक्षरों में मूक-बधिर साथी के पढ़ने के लिए स्क्रीन पर दिखाएगा।
+          </p>
+
+          {/* Central Pulsing Microphone Button */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', marginBottom: '24px' }}>
             <button
-              onClick={handleSaveSign}
-              disabled={isRecordingSign}
-              className="btn-emerald"
-              style={{ width: '100%', justifyContent: 'center', padding: '12px' }}
+              onClick={toggleListening}
+              className={isListening ? 'mic-listening' : ''}
+              style={{
+                width: '100px',
+                height: '100px',
+                borderRadius: '50%',
+                background: isListening 
+                  ? 'linear-gradient(135deg, #ef4444, #dc2626)' 
+                  : 'linear-gradient(135deg, #8b5cf6, #6d28d9)',
+                border: isListening ? '3px solid #fecaca' : '3px solid rgba(255, 255, 255, 0.2)',
+                color: 'white',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: isListening 
+                  ? '0 0 30px rgba(239, 68, 68, 0.8)' 
+                  : '0 8px 25px rgba(139, 92, 246, 0.5)',
+                transition: 'all 0.3s ease'
+              }}
+              title={isListening ? 'माइक बंद करने के लिए क्लिक करें' : 'माइक चालू करने के लिए क्लिक करें'}
             >
-              <PlusCircle size={18} />
-              {isRecordingSign ? 'सेव हो रहा है...' : 'नया साइन डेटाबेस में सेव करें'}
+              {isListening ? <MicOff size={42} /> : <Mic size={42} />}
             </button>
 
-            {saveStatus && (
-              <div style={{ marginTop: '12px', textAlign: 'center', fontWeight: 600, color: '#38bdf8', fontSize: '13px' }}>
-                {saveStatus}
+            <div style={{ marginTop: '14px' }}>
+              <span style={{
+                fontSize: '15px',
+                fontWeight: 700,
+                color: isListening ? '#f87171' : '#c4b5fd',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                justifyContent: 'center'
+              }}>
+                {isListening ? (
+                  <>
+                    <span className="recording-dot" />
+                    सुन रहे हैं... हिंदी में बोलिए (Tap to Stop)
+                  </>
+                ) : (
+                  '🎙️ माइक दबाकर हिंदी में बोलें (Tap to Speak)'
+                )}
+              </span>
+
+              {isListening && (
+                <div style={{ display: 'flex', gap: '4px', justifyContent: 'center', marginTop: '8px' }}>
+                  <span className="audio-bar" />
+                  <span className="audio-bar" />
+                  <span className="audio-bar" />
+                  <span className="audio-bar" />
+                  <span className="audio-bar" />
+                </div>
+              )}
+            </div>
+
+            {/* Speech Notice Banner */}
+            {speechNotice && (
+              <div style={{
+                marginTop: '12px',
+                padding: '8px 16px',
+                borderRadius: '20px',
+                background: speechNotice.includes('⚠️') ? 'rgba(239, 68, 68, 0.15)' : 'rgba(139, 92, 246, 0.15)',
+                border: `1px solid ${speechNotice.includes('⚠️') ? 'rgba(239, 68, 68, 0.3)' : 'rgba(139, 92, 246, 0.3)'}`,
+                color: speechNotice.includes('⚠️') ? '#fca5a5' : '#e9d5ff',
+                fontSize: '12px',
+                fontWeight: 600,
+                maxWidth: '520px'
+              }}>
+                {speechNotice}
               </div>
             )}
           </div>
 
-          <div className="glass-panel" style={{ padding: '20px' }}>
-            <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '12px' }}>
-              सिखाए गए साइन (Total: {allSigns.length})
-            </h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '350px', overflowY: 'auto' }}>
-              {allSigns.map(s => (
-                <div
-                  key={s.id}
-                  style={{
-                    background: 'rgba(255, 255, 255, 0.03)',
-                    border: '1px solid rgba(255, 255, 255, 0.06)',
-                    borderRadius: '8px',
-                    padding: '10px 14px',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center'
-                  }}
-                >
-                  <div>
-                    <h4 style={{ fontSize: '15px', fontWeight: 700 }}>{s.nameHindi}</h4>
-                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                      {s.category.toUpperCase()} {s.recordedBy ? `• By ${s.recordedBy}` : ''}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                    <span style={{ fontSize: '11px', color: s.landmarksSample && s.landmarksSample.length === 21 ? '#34d399' : '#f59e0b' }}>
-                      {s.landmarksSample && s.landmarksSample.length === 21 ? '✓ पोज़ सेट' : '⚠️ पोज़ नहीं'}
-                    </span>
+          {/* Big High-Contrast Visual Box for Deaf User */}
+          <div style={{
+            background: '#020617',
+            borderRadius: '18px',
+            padding: '24px 20px',
+            border: '2px solid rgba(139, 92, 246, 0.45)',
+            boxShadow: 'inset 0 2px 20px rgba(0, 0, 0, 0.8), 0 8px 30px rgba(139, 92, 246, 0.15)',
+            marginBottom: '20px',
+            textAlign: 'left'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', paddingBottom: '8px' }}>
+              <span style={{ fontSize: '11px', color: '#a78bfa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                👁️ मूक-बधिर साथी के लिए देवनागरी डिस्प्ले (High-Contrast)
+              </span>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {spokenHindiText && (
+                  <>
                     <button
-                      onClick={() => handleCaptureLivePose(s.id, s.nameHindi)}
+                      onClick={() => speakHindi(spokenHindiText)}
                       style={{
-                        background: 'rgba(99, 102, 241, 0.2)',
-                        border: '1px solid rgba(99, 102, 241, 0.4)',
-                        color: '#c7d2fe',
-                        padding: '6px 10px',
+                        background: 'rgba(16, 185, 129, 0.15)',
+                        border: '1px solid rgba(16, 185, 129, 0.3)',
+                        color: '#34d399',
+                        padding: '4px 10px',
                         borderRadius: '6px',
                         cursor: 'pointer',
-                        fontSize: '12px'
+                        fontSize: '11px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        fontWeight: 600
                       }}
-                      title="कैमरे से इस साइन के लिए हाथ का लाइव पोज़ रिकॉर्ड करें"
                     >
-                      📷 पोज़
+                      <Volume2 size={12} /> आवाज़ सुनें
                     </button>
                     <button
-                      onClick={() => speakHindi(s.nameHindi)}
+                      onClick={copyToClipboard}
                       style={{
                         background: 'rgba(59, 130, 246, 0.15)',
-                        border: 'none',
-                        color: '#60a5fa',
-                        padding: '6px 10px',
+                        border: '1px solid rgba(59, 130, 246, 0.3)',
+                        color: '#93c5fd',
+                        padding: '4px 10px',
                         borderRadius: '6px',
                         cursor: 'pointer',
-                        fontSize: '12px'
+                        fontSize: '11px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        fontWeight: 600
                       }}
                     >
-                      🔊 सुनें
+                      {copiedNotice ? <Check size={12} /> : <Copy size={12} />}
+                      {copiedNotice ? 'कॉपी हुआ!' : 'कॉपी करें'}
                     </button>
-                    {!BASE_SIGN_IDS.includes(s.id) && (
-                      <button
-                        onClick={() => handleDeleteSign(s.id, s.nameHindi)}
-                        style={{
-                          background: 'rgba(239, 68, 68, 0.2)',
-                          border: '1px solid rgba(239, 68, 68, 0.4)',
-                          color: '#f87171',
-                          padding: '6px 10px',
-                          borderRadius: '6px',
-                          cursor: 'pointer',
-                          fontSize: '12px'
-                        }}
-                        title="साइन हटाएं"
-                      >
-                        🗑️ हटाएं
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
+                    <button
+                      onClick={() => { setSpokenHindiText(''); setSpeechNotice(''); }}
+                      style={{
+                        background: 'rgba(239, 68, 68, 0.15)',
+                        border: '1px solid rgba(239, 68, 68, 0.3)',
+                        color: '#f87171',
+                        padding: '4px 8px',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontSize: '11px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px'
+                      }}
+                      title="टेक्स्ट साफ़ करें"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
-          </div>
-        </div>
 
-      {/* TAB 3: REVERSE MODE */}
-      <div style={{ display: activeTab === 'reverse' ? 'block' : 'none', maxWidth: '700px', margin: '0 auto' }}>
-          <div className="glass-panel" style={{ padding: '24px', textAlign: 'center' }}>
-            <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '6px' }}>
-              रिवर्स मोड: सामान्य व्यक्ति की बात मूक-बधिर साथी तक पहुँचाएं
-            </h2>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginBottom: '20px' }}>
-              सामान्य व्यक्ति जो भी हिंदी में बोलेगा या टाइप करेगा, वह यहाँ स्क्रीन पर बड़े देवनागरी अक्षरों में दिखेगा।
+            <p style={{
+              fontSize: '26px',
+              fontWeight: 800,
+              color: spokenHindiText ? '#facc15' : '#475569',
+              lineHeight: 1.45,
+              minHeight: '80px',
+              margin: 0
+            }}>
+              {spokenHindiText || 'माइक दबाकर बोलें या नीचे से वाक्य चुनें...'}
             </p>
+          </div>
 
-            {/* Quick Replies */}
-            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '14px', justifyContent: 'center' }}>
+          {/* College Quick Phrases */}
+          <div style={{ textAlign: 'left', marginBottom: '20px' }}>
+            <h4 style={{ fontSize: '13px', fontWeight: 700, color: '#c4b5fd', marginBottom: '10px' }}>
+              🏛️ तुरंत भेजने के लिए कॉलेज के सामान्य वाक्य:
+            </h4>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
               {[
-                'हाँ, लाइब्रेरी खुली है।',
-                'प्रिंसिपल सर ऑफिस में हैं।',
-                'आपकी अटेंडेंस लग गई है।',
-                'कैंटीन 10 मिनट में खुलेगी।'
+                'हाँ, लाइब्रेरी दूसरे माले पर खुली है।',
+                'प्रिंसिपल सर अपने केबिन में मौजूद हैं।',
+                'आपकी आज की अटेंडेंस लग चुकी है।',
+                'फीस काउंटर खिड़की नंबर 3 पर है।',
+                'कंप्यूटर लैब में क्लास चल रही है।',
+                'कृपया 5 मिनट प्रतीक्षा करें।',
+                'धन्यवाद! आपका दिन शुभ हो।'
               ].map(phrase => (
                 <button
                   key={phrase}
                   onClick={() => {
                     setSpokenHindiText(phrase);
                     speakHindi(phrase);
+                    setSpeechNotice(`चुना गया: "${phrase}"`);
                   }}
                   style={{
-                    background: 'rgba(139, 92, 246, 0.2)',
-                    border: '1px solid rgba(139, 92, 246, 0.4)',
-                    color: '#ddd6fe',
-                    padding: '6px 12px',
+                    background: 'rgba(139, 92, 246, 0.12)',
+                    border: '1px solid rgba(139, 92, 246, 0.35)',
+                    color: '#e9d5ff',
+                    padding: '7px 12px',
                     borderRadius: '8px',
                     fontSize: '12px',
                     cursor: 'pointer',
-                    fontWeight: 600
+                    fontWeight: 600,
+                    transition: 'all 0.2s ease'
                   }}
                 >
                   "{phrase}"
                 </button>
               ))}
             </div>
-
-            <div style={{ display: 'flex', gap: '6px', marginBottom: '20px' }}>
-              <input
-                type="text"
-                placeholder="यहाँ हिंदी में टाइप करें..."
-                value={manualHindiInput}
-                onChange={e => setManualHindiInput(e.target.value)}
-                style={{
-                  flex: 1,
-                  background: 'rgba(0, 0, 0, 0.3)',
-                  border: '1px solid rgba(255, 255, 255, 0.1)',
-                  borderRadius: '8px',
-                  padding: '8px 12px',
-                  color: 'white',
-                  fontSize: '14px'
-                }}
-              />
-              <button
-                onClick={() => {
-                  if (manualHindiInput) {
-                    setSpokenHindiText(manualHindiInput);
-                    speakHindi(manualHindiInput);
-                    setManualHindiInput('');
-                  }
-                }}
-                className="btn-primary"
-                style={{ padding: '8px 16px', fontSize: '13px' }}
-              >
-                दिखाएं & बोलें
-              </button>
-            </div>
-
-            {/* Big High-Contrast Box */}
-            <div style={{
-              background: '#030712',
-              borderRadius: '16px',
-              padding: '24px 16px',
-              border: '2px solid rgba(139, 92, 246, 0.4)',
-              minHeight: '120px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}>
-              <p style={{
-                fontSize: '24px',
-                fontWeight: 800,
-                color: spokenHindiText ? '#facc15' : '#475569',
-                lineHeight: 1.4
-              }}>
-                {spokenHindiText || 'बोली गई हिंदी यहाँ बड़े अक्षरों में दिखाई देगी...'}
-              </p>
-            </div>
           </div>
+
+          {/* Manual Hindi Input fallback */}
+          <div style={{
+            display: 'flex',
+            gap: '8px',
+            paddingTop: '16px',
+            borderTop: '1px solid rgba(255, 255, 255, 0.08)'
+          }}>
+            <input
+              type="text"
+              placeholder="या यहाँ कीबोर्ड से हिंदी में टाइप करें..."
+              value={manualHindiInput}
+              onChange={e => setManualHindiInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && manualHindiInput.trim()) {
+                  setSpokenHindiText(manualHindiInput.trim());
+                  speakHindi(manualHindiInput.trim());
+                  setManualHindiInput('');
+                }
+              }}
+              style={{
+                flex: 1,
+                background: 'rgba(0, 0, 0, 0.4)',
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                borderRadius: '10px',
+                padding: '10px 14px',
+                color: 'white',
+                fontSize: '14px'
+              }}
+            />
+            <button
+              onClick={() => {
+                if (manualHindiInput.trim()) {
+                  setSpokenHindiText(manualHindiInput.trim());
+                  speakHindi(manualHindiInput.trim());
+                  setManualHindiInput('');
+                }
+              }}
+              className="btn-purple"
+              style={{ padding: '10px 18px', fontSize: '13px' }}
+            >
+              दिखाएं & बोलें
+            </button>
+          </div>
+
         </div>
+      </div>
       </div>
   );
 }
